@@ -240,29 +240,57 @@ export default {
           }
         })
 
-        // Добавляем изображение Vue логотипа в конец документа
+        // Добавляем изображение test.svg в конец документа
         try {
           const { Image } = docxModule
-          
+
           if (!Image) {
             throw new Error('Image API не найден в docxModule')
           }
-          
-          console.log('Начинаем загрузку изображения...')
-          
-          // Загружаем локальный файл изображения из public папки
-          const imageUrl = '/vue-logo.png'
-          const response = await fetch(imageUrl)
-          
+
+          console.log('Начинаем загрузку SVG...')
+
+          // Загружаем SVG файл
+          const svgUrl = '/src/test.svg'
+          const response = await fetch(svgUrl)
+
           if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`)
           }
-          
-          console.log('Изображение загружено, размер:', response.headers.get('content-length'))
-          
-          const imageBlob = await response.blob()
-          const arrayBuffer = await imageBlob.arrayBuffer()
-          const bytes = new Uint8Array(arrayBuffer)
+
+          const svgText = await response.text()
+          console.log('SVG загружен')
+
+          // Конвертируем SVG в PNG через canvas
+          const canvas = document.createElement('canvas')
+          const ctx = canvas.getContext('2d')
+          const img = new window.Image()
+
+          // Создаем промис для загрузки изображения
+          const imageBytes = await new Promise((resolve, reject) => {
+            img.onload = async () => {
+              // Устанавливаем размер canvas
+              canvas.width = 400
+              canvas.height = 200
+
+              // Рисуем SVG на canvas
+              ctx.drawImage(img, 0, 0, 400, 200)
+
+              // Конвертируем canvas в PNG blob
+              canvas.toBlob(async (blob) => {
+                const arrayBuffer = await blob.arrayBuffer()
+                resolve(new Uint8Array(arrayBuffer))
+              }, 'image/png')
+            }
+
+            img.onerror = () => reject(new Error('Не удалось загрузить SVG'))
+
+            // Загружаем SVG как data URL
+            const svgBlob = new Blob([svgText], { type: 'image/svg+xml' })
+            img.src = URL.createObjectURL(svgBlob)
+          })
+
+          const bytes = imageBytes
           
           console.log('Размер байтов изображения:', bytes.length)
           console.log('Первые байты изображения:', Array.from(bytes.slice(0, 10)))
@@ -275,10 +303,10 @@ export default {
           // Создаем изображение и устанавливаем размер
           // В DOCX размеры указываются в EMU (English Metric Units)
           // 1 пиксель = 9525 EMU (при 96 DPI)
-          // Для 400x400 пикселей: 400 * 9525 = 3,810,000 EMU
+          // Для 400x200 пикселей
           const pixelsToEmu = 9525
           const widthEmu = 400 * pixelsToEmu
-          const heightEmu = 400 * pixelsToEmu
+          const heightEmu = 200 * pixelsToEmu
           
           const image = new Image(bytes).size(widthEmu, heightEmu)
           
@@ -294,7 +322,7 @@ export default {
           // Добавляем текст перед изображением для проверки
           docx.addParagraph(
             new Paragraph()
-              .addRun(new Run().addText('Vue.js логотип:'))
+              .addRun(new Run().addText('Электронная подпись:'))
           )
           
           // Создаем отдельный параграф только с изображением (без текста)
