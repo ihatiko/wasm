@@ -266,3 +266,30 @@ body {
   font-weight: normal;
 }
 
+.file-upload-btn {
+  cursor: pointer;
+  position: relative;
+}
+
+.file-upload-btn input[type="file"] {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.uploaded-file-info {
+  background: #e6f3ff;
+  border: 2px solid #4a90e2;
+  border-radius: 6px;
+  padding: 12px 20px;
+  margin-bottom: 20px;
+  color: #2c5282;
+  font-size: 0.95rem;
+}
+
+.uploaded-file-info strong {
+  color: #1a365d;
+}
+

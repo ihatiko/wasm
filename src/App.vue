@@ -10,6 +10,19 @@
     </div>
 
     <div class="controls">
+      <label class="btn btn-primary file-upload-btn">
+        📤 Загрузить DOCX файл
+        <input 
+          type="file" 
+          accept=".docx" 
+          @change="handleFileUpload" 
+          style="display: none;"
+          :disabled="isLoading"
+        >
+      </label>
+      <button @click="addStampToDocument" class="btn btn-success" :disabled="!uploadedDocx || isLoading">
+        🔖 Поставить печать
+      </button>
       <button @click="addSection" class="btn btn-primary">
         ➕ Добавить секцию
       </button>
@@ -19,6 +32,10 @@
       <button @click="clearAll" class="btn btn-danger" :disabled="sections.length === 0">
         🗑️ Очистить все
       </button>
+    </div>
+
+    <div v-if="uploadedFileName" class="uploaded-file-info">
+      📄 Загружен файл: <strong>{{ uploadedFileName }}</strong>
     </div>
 
     <div v-if="isLoading" class="loading">
@@ -119,6 +136,7 @@
 <script>
 import { ref, onMounted } from 'vue'
 import { saveAs } from 'file-saver'
+import JSZip from 'jszip'
 
 export default {
   name: 'App',
@@ -127,6 +145,8 @@ export default {
     const isLoading = ref(false)
     const statusMessage = ref('')
     const statusMessageType = ref('')
+    const uploadedDocx = ref(null)
+    const uploadedFileName = ref('')
     let docxModule = null
 
     // Инициализация docx-wasm
@@ -180,6 +200,171 @@ export default {
 
     const updateParagraph = (sectionIndex, paraIndex) => {
       // Параграф обновляется реактивно через v-model
+    }
+
+    // Загрузка DOCX файла
+    const handleFileUpload = async (event) => {
+      const file = event.target.files[0]
+      if (!file) return
+
+      if (!file.name.endsWith('.docx')) {
+        showStatus('Пожалуйста, выберите файл .docx', 'error')
+        return
+      }
+
+      try {
+        isLoading.value = true
+        const arrayBuffer = await file.arrayBuffer()
+        uploadedDocx.value = arrayBuffer
+        uploadedFileName.value = file.name
+        showStatus(`Файл "${file.name}" успешно загружен!`, 'success')
+      } catch (error) {
+        console.error('Ошибка загрузки файла:', error)
+        showStatus(`Ошибка загрузки файла: ${error.message}`, 'error')
+      } finally {
+        isLoading.value = false
+      }
+    }
+
+    // Загрузка изображения печати
+    const loadStampImage = async () => {
+      try {
+        // Загружаем SVG файл печати
+        const svgUrl = '/src/test.svg'
+        const response = await fetch(svgUrl)
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+
+        const svgText = await response.text()
+
+        // Конвертируем SVG в PNG через canvas
+        const canvas = document.createElement('canvas')
+        const ctx = canvas.getContext('2d')
+        const img = new window.Image()
+
+        const imageBytes = await new Promise((resolve, reject) => {
+          img.onload = async () => {
+            // Устанавливаем размер canvas для печати (обычно печати небольшие)
+            canvas.width = 300
+            canvas.height = 300
+
+            // Рисуем SVG на canvas
+            ctx.drawImage(img, 0, 0, 300, 300)
+
+            // Конвертируем canvas в PNG blob
+            canvas.toBlob(async (blob) => {
+              const arrayBuffer = await blob.arrayBuffer()
+              resolve(new Uint8Array(arrayBuffer))
+            }, 'image/png')
+          }
+
+          img.onerror = () => reject(new Error('Не удалось загрузить SVG печати'))
+
+          // Загружаем SVG как data URL
+          const svgBlob = new Blob([svgText], { type: 'image/svg+xml' })
+          img.src = URL.createObjectURL(svgBlob)
+        })
+
+        return imageBytes
+      } catch (error) {
+        console.error('Ошибка загрузки изображения печати:', error)
+        throw error
+      }
+    }
+
+    // Добавление печати используя только docx-wasm
+    const addStampToDocument = async () => {
+      if (!uploadedDocx.value || !docxModule) {
+        showStatus('Сначала загрузите DOCX файл', 'error')
+        return
+      }
+
+      try {
+        isLoading.value = true
+        showStatus('Обработка документа...', 'success')
+
+        const stampImageBytes = await loadStampImage()
+        const { Docx, Paragraph, Run, Image } = docxModule
+        
+        // Создаем документ с печатью через docx-wasm
+        const docx = new Docx()
+        const pixelsToEmu = 9525
+        const stampImage = new Image(stampImageBytes).size(300 * pixelsToEmu, 300 * pixelsToEmu)
+        docx.addParagraph(new Paragraph().addRun(new Run().addImage(stampImage)))
+        const { buffer: stampBuffer } = docx.build()
+        
+        // Загружаем архивы
+        const originalZip = await JSZip.loadAsync(uploadedDocx.value)
+        const stampZip = await JSZip.loadAsync(stampBuffer)
+        const newZip = await JSZip.loadAsync(uploadedDocx.value)
+        
+        // Объединяем document.xml
+        const originalDocXml = await originalZip.file('word/document.xml').async('string')
+        const stampDocXml = await stampZip.file('word/document.xml').async('string')
+        const originalBodyEnd = originalDocXml.lastIndexOf('</w:body>')
+        const stampBodyStart = stampDocXml.indexOf('<w:body')
+        const stampBodyEnd = stampDocXml.indexOf('</w:body>')
+        
+        if (originalBodyEnd === -1 || stampBodyStart === -1 || stampBodyEnd === -1) {
+          throw new Error('Не удалось найти body в документе')
+        }
+        
+        const stampBodyContent = stampDocXml.substring(
+          stampDocXml.indexOf('>', stampBodyStart) + 1,
+          stampBodyEnd
+        )
+        
+        newZip.file('word/document.xml', 
+          originalDocXml.substring(0, originalBodyEnd) + 
+          stampBodyContent + 
+          originalDocXml.substring(originalBodyEnd)
+        )
+        
+        // Объединяем relationships
+        const originalRelsXml = await originalZip.file('word/_rels/document.xml.rels').async('string')
+        const stampRelsXml = await stampZip.file('word/_rels/document.xml.rels').async('string')
+        const relsEndIndex = originalRelsXml.lastIndexOf('</Relationships>')
+        const stampRelsStart = stampRelsXml.indexOf('<Relationships')
+        const stampRelsEnd = stampRelsXml.indexOf('</Relationships>')
+        
+        if (relsEndIndex !== -1 && stampRelsStart !== -1 && stampRelsEnd !== -1) {
+          const stampRelsContent = stampRelsXml.substring(
+            stampRelsXml.indexOf('>', stampRelsStart) + 1,
+            stampRelsEnd
+          )
+          newZip.file('word/_rels/document.xml.rels',
+            originalRelsXml.substring(0, relsEndIndex) + 
+            stampRelsContent + 
+            originalRelsXml.substring(relsEndIndex)
+          )
+        }
+        
+        // Копируем изображения
+        const imageFiles = Object.keys(stampZip.files).filter(
+          path => path.startsWith('word/media/') && !stampZip.files[path].dir
+        )
+        for (const imagePath of imageFiles) {
+          const imageFile = stampZip.file(imagePath)
+          if (imageFile) {
+            newZip.file(imagePath, await imageFile.async('uint8array'))
+          }
+        }
+        
+        // Сохраняем файл
+        const blob = new Blob([await newZip.generateAsync({ type: 'arraybuffer' })], { 
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' 
+        })
+        saveAs(blob, uploadedFileName.value.replace('.docx', '') + '_с_печатью.docx')
+        
+        showStatus('Печать успешно добавлена! Документ сохранен.', 'success')
+      } catch (error) {
+        console.error('Ошибка при добавлении печати:', error)
+        showStatus(`Ошибка: ${error.message}`, 'error')
+      } finally {
+        isLoading.value = false
+      }
     }
 
     const clearAll = () => {
@@ -240,110 +425,6 @@ export default {
           }
         })
 
-        // Добавляем изображение test.svg в конец документа
-        try {
-          const { Image } = docxModule
-
-          if (!Image) {
-            throw new Error('Image API не найден в docxModule')
-          }
-
-          console.log('Начинаем загрузку SVG...')
-
-          // Загружаем SVG файл
-          const svgUrl = '/src/test.svg'
-          const response = await fetch(svgUrl)
-
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`)
-          }
-
-          const svgText = await response.text()
-          console.log('SVG загружен')
-
-          // Конвертируем SVG в PNG через canvas
-          const canvas = document.createElement('canvas')
-          const ctx = canvas.getContext('2d')
-          const img = new window.Image()
-
-          // Создаем промис для загрузки изображения
-          const imageBytes = await new Promise((resolve, reject) => {
-            img.onload = async () => {
-              // Устанавливаем размер canvas
-              canvas.width = 400
-              canvas.height = 200
-
-              // Рисуем SVG на canvas
-              ctx.drawImage(img, 0, 0, 400, 200)
-
-              // Конвертируем canvas в PNG blob
-              canvas.toBlob(async (blob) => {
-                const arrayBuffer = await blob.arrayBuffer()
-                resolve(new Uint8Array(arrayBuffer))
-              }, 'image/png')
-            }
-
-            img.onerror = () => reject(new Error('Не удалось загрузить SVG'))
-
-            // Загружаем SVG как data URL
-            const svgBlob = new Blob([svgText], { type: 'image/svg+xml' })
-            img.src = URL.createObjectURL(svgBlob)
-          })
-
-          const bytes = imageBytes
-          
-          console.log('Размер байтов изображения:', bytes.length)
-          console.log('Первые байты изображения:', Array.from(bytes.slice(0, 10)))
-
-          // Проверяем, что это действительно PNG (должен начинаться с PNG signature)
-          const pngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-          const isPng = pngSignature.every((byte, index) => bytes[index] === byte)
-          console.log('Это PNG файл?', isPng)
-
-          // Создаем изображение и устанавливаем размер
-          // В DOCX размеры указываются в EMU (English Metric Units)
-          // 1 пиксель = 9525 EMU (при 96 DPI)
-          // Для 400x200 пикселей
-          const pixelsToEmu = 9525
-          const widthEmu = 400 * pixelsToEmu
-          const heightEmu = 200 * pixelsToEmu
-          
-          const image = new Image(bytes).size(widthEmu, heightEmu)
-          
-          console.log('Изображение создано, добавляем в документ...')
-          console.log('Параметры изображения:', { 
-            width: image.w, 
-            height: image.h, 
-            dataLength: image.data.length,
-            widthEmu,
-            heightEmu
-          })
-          
-          // Добавляем текст перед изображением для проверки
-          docx.addParagraph(
-            new Paragraph()
-              .addRun(new Run().addText('Электронная подпись:'))
-          )
-          
-          // Создаем отдельный параграф только с изображением (без текста)
-          const imageRun = new Run().addImage(image)
-          const imageParagraph = new Paragraph().addRun(imageRun)
-          docx.addParagraph(imageParagraph)
-          
-          // Добавляем текст после изображения для проверки
-          docx.addParagraph(
-            new Paragraph()
-              .addRun(new Run().addText('Конец документа'))
-          )
-          
-          console.log('Изображение успешно добавлено в документ')
-          showStatus('Изображение добавлено в документ', 'success')
-        } catch (imageError) {
-          console.error('Ошибка при добавлении изображения:', imageError)
-          console.error('Детали ошибки:', imageError.stack)
-          showStatus(`Предупреждение: изображение не добавлено (${imageError.message})`, 'error')
-          // Продолжаем без изображения, если не удалось добавить
-        }
 
         // Собираем документ
         const { buffer } = docx.build()
@@ -368,13 +449,17 @@ export default {
       isLoading,
       statusMessage,
       statusMessageType,
+      uploadedDocx,
+      uploadedFileName,
       addSection,
       removeSection,
       addParagraph,
       removeParagraph,
       updateParagraph,
       clearAll,
-      saveDocument
+      saveDocument,
+      handleFileUpload,
+      addStampToDocument
     }
   }
 }

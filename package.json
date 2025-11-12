@@ -11,6 +11,7 @@
   "dependencies": {
     "docx-wasm": "^0.4.17",
     "file-saver": "^2.0.5",
+    "jszip": "^3.10.1",
     "vue": "^3.4.0"
   },
   "devDependencies": {
